@@ -82,6 +82,8 @@ func migrate(db *gorm.DB) error {
 		&model.OperationDirective{},
 		&model.DirectiveApproval{},
 		&model.ExecutionConfirmation{},
+		&model.JointDispatchOrder{},
+		&model.JointDispatchGate{},
 	)
 }
 
@@ -127,6 +129,10 @@ func Seed(ctx context.Context, db *gorm.DB, cfg config.Config) error {
 	}
 
 	if err := seedExecutionConfirmation(ctx, db); err != nil {
+		return err
+	}
+
+	if err := seedJointDispatch(ctx, db); err != nil {
 		return err
 	}
 
@@ -181,6 +187,26 @@ func seedGateUnit(ctx context.Context, db *gorm.DB) error {
 			Description: "用于启动验证和主要流程演示的闸门记录"}, Facility: "水电站闸门调度许可区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-003"},
+
+		{BaseModel: model.BaseModel{Code: "GU-004", Name: "左岸溢洪道一号闸", Status: "closed", Version: 1,
+			Description: "与 GU-005 同属库区 R-001，用于联合调度许可演示"}, Facility: "水电站闸门调度许可区域1", Owner: "运行一组",
+			Category: "常规", RiskLevel: "medium", MetricValue: 0, MetricUnit: "%",
+			EffectiveAt: now.Add(2 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-001"},
+
+		{BaseModel: model.BaseModel{Code: "GU-005", Name: "左岸溢洪道二号闸", Status: "closed", Version: 1,
+			Description: "与 GU-004 同属库区 R-001，用于联合调度许可演示"}, Facility: "水电站闸门调度许可区域1", Owner: "运行一组",
+			Category: "常规", RiskLevel: "medium", MetricValue: 0, MetricUnit: "%",
+			EffectiveAt: now.Add(2 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-001"},
+
+		{BaseModel: model.BaseModel{Code: "GU-006", Name: "右岸泄洪一号闸", Status: "closed", Version: 1,
+			Description: "与 GU-007 同属库区 R-002，用于联合调度许可演示"}, Facility: "水电站闸门调度许可区域2", Owner: "质量复核组",
+			Category: "重点", RiskLevel: "medium", MetricValue: 0, MetricUnit: "%",
+			EffectiveAt: now.Add(4 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-002"},
+
+		{BaseModel: model.BaseModel{Code: "GU-007", Name: "右岸泄洪二号闸", Status: "closed", Version: 1,
+			Description: "与 GU-006 同属库区 R-002，用于联合调度许可演示"}, Facility: "水电站闸门调度许可区域2", Owner: "质量复核组",
+			Category: "重点", RiskLevel: "medium", MetricValue: 0, MetricUnit: "%",
+			EffectiveAt: now.Add(4 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "R-002"},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }
@@ -236,4 +262,32 @@ func seedExecutionConfirmation(ctx context.Context, db *gorm.DB) error {
 		MetricValue: 37.5, MetricUnit: "%", EffectiveAt: now, Evidence: "待现场核对开度反馈、视频与水位变化", RelatedCode: "OD-003",
 	}}
 	return db.WithContext(ctx).Create(&items).Error
+}
+
+func seedJointDispatch(ctx context.Context, db *gorm.DB) error {
+	var count int64
+	if err := db.WithContext(ctx).Model(&model.JointDispatchOrder{}).Count(&count).Error; err != nil || count > 0 {
+		return err
+	}
+	gates := make([]model.GateUnit, 0)
+	if err := db.WithContext(ctx).Where("code IN ?", []string{"GU-004", "GU-005"}).Order("code ASC").Find(&gates).Error; err != nil {
+		return err
+	}
+	if len(gates) != 2 {
+		return nil
+	}
+	now := time.Now().UTC()
+	order := model.JointDispatchOrder{
+		BaseModel: model.BaseModel{Code: "JD-001", Name: "左岸溢洪道双闸联合开启令", Status: "draft", Version: 1,
+			Description: "同一库区两孔闸门联合调度示例，提交复核后执行时全部闸门原子进入动作中"},
+		Facility: gates[0].Facility, Owner: "运行一组", Category: "联合调度", RiskLevel: "medium",
+		ReservoirCode: "R-001", TargetState: "open", EffectiveAt: now.Add(2 * time.Hour),
+		Evidence: "水位窗口、闸门状态与通信链路已核对，等待提交复核",
+	}
+	for _, gate := range gates {
+		order.Gates = append(order.Gates, model.JointDispatchGate{
+			GateID: gate.ID, GateCode: gate.Code, GateName: gate.Name, GateVersion: gate.Version, CreatedAt: now,
+		})
+	}
+	return db.WithContext(ctx).Create(&order).Error
 }

@@ -1,7 +1,17 @@
 
-import type { ApiEnvelope, UserSession } from '../types/domain';
+import type { ApiEnvelope, GateConflict, UserSession } from '../types/domain';
 
 const TOKEN_KEY = 'domain-control-session';
+
+export class ApiError extends Error {
+  status: number;
+  conflicts: GateConflict[];
+  constructor(message: string, status: number, conflicts: GateConflict[] = []) {
+    super(message);
+    this.status = status;
+    this.conflicts = conflicts;
+  }
+}
 
 export function getToken(): string {
 	return loadSession()?.token || '';
@@ -31,6 +41,6 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 	if (response.status === 401) clearSession();
   if (response.status === 204) return { data: undefined as T };
   const payload = await response.json().catch(() => ({ error: 'invalid_response', message: '服务返回了无法解析的响应' }));
-  if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+  if (!response.ok) throw new ApiError(payload.message || payload.error || `HTTP ${response.status}`, response.status, payload.conflicts || []);
   return payload as ApiEnvelope<T>;
 }

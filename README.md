@@ -39,6 +39,7 @@ docker compose down -v --remove-orphans
 | 闸门 | `GateUnit` | `/api/gates` | open, closed, moving, locked |
 | 操作指令 | `OperationDirective` | `/api/directives` | draft, pending, approved, executing, completed, aborted |
 | 执行确认 | `ExecutionConfirmation` | `/api/confirmations` | pending, confirmed, failed, cancelled |
+| 联合调度许可 | `JointDispatchOrder` | `/api/joint-dispatches` | draft, pending, approved, executing, completed, failed, aborted |
 
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC；写接口在 Gin 路由层再次校验角色。
 - 指令严格按 `draft → pending → approved → executing` 推进，不允许跳过审批；`completed` 只能由有效执行回执原子触发，任意活动阶段可按权限中止。
@@ -46,6 +47,7 @@ docker compose down -v --remove-orphans
 - 所有状态变化使用乐观锁，并将业务状态、审批证据和不可覆盖审计日志放在同一个数据库事务中。
 - 库区、闸门、指令和执行回执逐级校验权威关联；不存在、跨区域或闭锁的对象不能进入下游流程。
 - 指令开始执行时闸门原子进入 `moving`；成功回执同时完成指令并落定目标闸位，失败回执同时中止指令并闭锁闸门。
+- 联合调度许可关联同库区 2-5 个闸门并快照其版本；执行时任一闸门已闭锁、已有执行中指令或版本冲突即整次拒绝并返回冲突闸门清单，否则全部闸门在同一事务进入 `moving`；完成或失败回执让全部闸门同时落定，重复或并发执行只成功一次。
 - 请求 ID、结构化日志、全局错误映射和 Redis 分布式限流。
 - 提供脱敏运行配置、当前会话、审计汇总和单实体审计历史接口。
 - 业务工作台支持查询、新建、状态推进、风险标识及操作审计查看。
@@ -125,6 +127,7 @@ cd .. && docker compose config --quiet
 |---|---|---|
 | `GateState` | `open, closed, moving, locked` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts`、`frontend/src/components/common/GateStateBadge.vue` |
 | `DirectiveState` | `draft, pending, approved, executing, completed, aborted` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts`、`frontend/src/components/common/DirectiveTimeline.vue` |
+| `JointDispatchState` | `draft, pending, approved, executing, completed, failed, aborted` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts`、`frontend/src/pages/JointDispatchPage.vue` |
 
 每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
 

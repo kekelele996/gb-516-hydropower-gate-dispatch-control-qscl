@@ -19,12 +19,13 @@ type SystemHandler struct {
 	gateUnit              service.GateUnitService
 	operationDirective    service.OperationDirectiveService
 	executionConfirmation service.ExecutionConfirmationService
+	jointDispatch         service.JointDispatchService
 	db                    *gorm.DB
 	redis                 *redis.Client
 }
 
-func NewSystemHandler(security service.SecurityService, reservoir service.ReservoirService, gateUnit service.GateUnitService, operationDirective service.OperationDirectiveService, executionConfirmation service.ExecutionConfirmationService, db *gorm.DB, redisClient *redis.Client) *SystemHandler {
-	return &SystemHandler{security: security, reservoir: reservoir, gateUnit: gateUnit, operationDirective: operationDirective, executionConfirmation: executionConfirmation, db: db, redis: redisClient}
+func NewSystemHandler(security service.SecurityService, reservoir service.ReservoirService, gateUnit service.GateUnitService, operationDirective service.OperationDirectiveService, executionConfirmation service.ExecutionConfirmationService, jointDispatch service.JointDispatchService, db *gorm.DB, redisClient *redis.Client) *SystemHandler {
+	return &SystemHandler{security: security, reservoir: reservoir, gateUnit: gateUnit, operationDirective: operationDirective, executionConfirmation: executionConfirmation, jointDispatch: jointDispatch, db: db, redis: redisClient}
 }
 
 func (h *SystemHandler) Login(c *gin.Context) {
@@ -89,6 +90,13 @@ func (h *SystemHandler) Overview(c *gin.Context) {
 		return
 	}
 	result["confirmations"] = executionConfirmationCounts
+
+	jointDispatchCounts, err := h.jointDispatch.StatusCounts(ctx)
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	result["jointDispatches"] = jointDispatchCounts
 
 	util.OK(c, result)
 }

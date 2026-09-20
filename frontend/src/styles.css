@@ -72,6 +72,17 @@ td small { display: block; color: #7d8d97; margin-top: 4px; }
 .approval-steps li strong { overflow: hidden; margin: 2px 0; font-size: 12px; text-overflow: ellipsis; }
 .approval-steps .pending-step { color: #7d5307; font-size: 12px; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 2px; }
+.gate-chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.gate-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px 3px 8px; border: 1px solid #d5e0e5; border-radius: 3px; background: #f6f9fa; font-size: 12px; }
+.gate-chip strong { color: #285c77; }
+.gate-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+.gate-option { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid #cbd7dc; border-radius: 4px; background: white; cursor: pointer; text-align: left; }
+.gate-option span { color: #667886; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gate-option.selected { border-color: #2a9d78; background: #e9f6f1; }
+.gate-option:disabled { cursor: not-allowed; opacity: .55; }
+.conflict-list { margin: 8px 0 0; padding-left: 18px; }
+.conflict-list li { margin: 2px 0; }
+.transition-gates { margin: 0 0 12px; }
 .record-form .el-form-item { margin-bottom: 14px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .transition-summary { display: flex; align-items: center; gap: 10px; margin: 14px 0; }

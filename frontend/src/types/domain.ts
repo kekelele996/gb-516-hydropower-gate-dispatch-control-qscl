@@ -41,7 +41,45 @@ export interface DirectiveApproval {
 }
 
 export interface PageMeta { page: number; pageSize: number; total: number }
-export interface ApiEnvelope<T> { data: T; error?: string; message?: string; meta?: PageMeta }
+export interface ApiEnvelope<T> { data: T; error?: string; message?: string; meta?: PageMeta; conflicts?: GateConflict[] }
+export interface JointDispatchGate {
+  id: number;
+  orderId: number;
+  gateId: number;
+  gateCode: string;
+  gateName: string;
+  gateVersion: number;
+  currentStatus?: string;
+  currentVersion?: number;
+}
+export interface JointDispatchOrder {
+  id: number;
+  code: string;
+  name: string;
+  status: string;
+  version: number;
+  description: string;
+  facility: string;
+  owner: string;
+  category: string;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  reservoirCode: string;
+  targetState: 'open' | 'closed';
+  effectiveAt: string;
+  evidence: string;
+  submittedBy?: string;
+  submittedAt?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  executedBy?: string;
+  executedAt?: string;
+  settledBy?: string;
+  settledAt?: string;
+  gates: JointDispatchGate[];
+  createdAt: string;
+  updatedAt: string;
+}
+export interface GateConflict { gateCode: string; reason: string }
 export interface UserSession { token: string; username: string; displayName: string; role: string; expiresIn: number; expiresAt: number }
 export interface SessionResponse { username: string; displayName: string; role: string; requestId: string }
 export interface AuditLog {

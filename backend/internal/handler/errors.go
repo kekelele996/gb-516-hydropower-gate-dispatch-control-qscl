@@ -12,7 +12,10 @@ import (
 )
 
 func handleError(c *gin.Context, err error) {
+	var conflictErr *service.GateConflictError
 	switch {
+	case errors.As(err, &conflictErr):
+		util.FailWithConflicts(c, http.StatusConflict, "gate_conflict", conflictErr.Error(), conflictErr.Conflicts)
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		util.Fail(c, http.StatusNotFound, "not_found", "record was not found")
 	case errors.Is(err, repository.ErrVersionConflict):

@@ -57,6 +57,20 @@ var ExecutionConfirmationTransitions = map[string]map[string]bool{
 	"cancelled": {},
 }
 
+// JointDispatchTransitions drives 闸门联合调度许可. Executing moves every
+// linked gate into moving atomically; completed/failed settle all gates at once.
+var JointDispatchTransitions = map[string]map[string]bool{
+	"draft":     {"pending": true},
+	"pending":   {"approved": true, "aborted": true},
+	"approved":  {"executing": true, "aborted": true},
+	"executing": {"completed": true, "failed": true},
+	"completed": {},
+	"failed":    {},
+	"aborted":   {},
+}
+
+var AllJointDispatchState = []string{"draft", "pending", "approved", "executing", "completed", "failed", "aborted"}
+
 func CanTransition(graph map[string]map[string]bool, from, to string) bool {
 	targets, exists := graph[from]
 	return exists && targets[to]

@@ -18,6 +18,7 @@ type OperationDirectiveRepository interface {
 	TransitionWithApproval(context.Context, uint, uint, *model.OperationDirective, *model.DirectiveApproval, *model.AuditLog) error
 	Delete(context.Context, uint) error
 	CountByStatus(context.Context) (map[string]int64, error)
+	ListActiveByGateCodes(context.Context, []string) ([]model.OperationDirective, error)
 }
 
 type operationDirectiveRepository struct {
@@ -81,4 +82,18 @@ func (r *operationDirectiveRepository) Delete(ctx context.Context, id uint) erro
 }
 func (r *operationDirectiveRepository) CountByStatus(ctx context.Context) (map[string]int64, error) {
 	return r.store.CountByStatus(ctx)
+}
+
+// ListActiveByGateCodes finds directives still occupying any of the given
+// gates (pending, approved or executing), so joint dispatch can reject the
+// whole request and name the conflicting gates.
+func (r *operationDirectiveRepository) ListActiveByGateCodes(ctx context.Context, gateCodes []string) ([]model.OperationDirective, error) {
+	items := make([]model.OperationDirective, 0)
+	if len(gateCodes) == 0 {
+		return items, nil
+	}
+	err := databaseForContext(ctx, r.db).
+		Where("related_code IN ? AND status IN ?", gateCodes, []string{"pending", "approved", "executing"}).
+		Find(&items).Error
+	return items, err
 }

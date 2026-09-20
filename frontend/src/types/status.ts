@@ -10,6 +10,7 @@ export const ENTITY_TRANSITIONS: Readonly<Record<string, Readonly<Record<string,
 	gateUnit: { open: ['moving', 'locked'], closed: ['moving', 'locked'], moving: ['open', 'closed', 'locked'], locked: ['closed'] },
 	operationDirective: { draft: ['pending'], pending: ['approved', 'aborted'], approved: ['executing', 'aborted'], executing: ['completed', 'aborted'], completed: [], aborted: [] },
 	executionConfirmation: { pending: ['confirmed', 'failed'], confirmed: [], failed: ['cancelled'], cancelled: [] },
+	jointDispatch: { draft: ['pending'], pending: ['approved', 'aborted'], approved: ['executing', 'aborted'], executing: ['completed', 'failed'], completed: [], failed: [], aborted: [] },
 };
 
 export function allowedTransitions(entity: string, status: string): readonly string[] {

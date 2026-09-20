@@ -77,6 +77,26 @@ func (s *Store[T]) GetByCode(ctx context.Context, code string) (T, error) {
 	return item, err
 }
 
+// GetByCodes loads every record whose code is in the list. Callers compare the
+// result length with the request to detect unknown codes.
+func (s *Store[T]) GetByCodes(ctx context.Context, codes []string) ([]T, error) {
+	items := make([]T, 0, len(codes))
+	if len(codes) == 0 {
+		return items, nil
+	}
+	normalized := make([]string, 0, len(codes))
+	for _, code := range codes {
+		if trimmed := strings.ToUpper(strings.TrimSpace(code)); trimmed != "" {
+			normalized = append(normalized, trimmed)
+		}
+	}
+	if len(normalized) == 0 {
+		return items, nil
+	}
+	err := databaseForContext(ctx, s.db).Where("code IN ?", normalized).Find(&items).Error
+	return items, err
+}
+
 func (s *Store[T]) Create(ctx context.Context, item *T) error {
 	return databaseForContext(ctx, s.db).Create(item).Error
 }

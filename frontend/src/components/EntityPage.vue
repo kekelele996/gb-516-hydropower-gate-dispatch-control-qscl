@@ -23,6 +23,7 @@ const relatedOptions = ref<DomainRecord[]>([]);
 const createForm = reactive({
   code: '', name: '', description: '', facility: '', owner: '', category: '',
   riskLevel: 'medium', metricValue: 0, metricUnit: '%', evidence: '', relatedCode: '', gateState: 'closed',
+  gateCodes: [] as string[],
 });
 
 const highRisk = computed(() => props.store.items.filter((item: DomainRecord) => ['high', 'critical'].includes(item.riskLevel)).length);
@@ -47,6 +48,14 @@ const metricLabel = computed(() => ({
 
 const relationLabel = computed(() => ({ gateUnit: '所属库区', operationDirective: '目标闸门', executionConfirmation: '关联指令' }[props.config.key] || '关联对象'));
 
+// Joint dispatch gates must live in the same facility as the primary gate.
+const jointGateOptions = computed(() => {
+  if (props.config.key !== 'operationDirective') return [];
+  const primary = relatedOptions.value.find((item) => item.code === createForm.relatedCode);
+  if (!primary) return [];
+  return relatedOptions.value.filter((item) => item.facility === primary.facility);
+});
+
 const createReady = computed(() => Boolean(
 	createForm.code.trim() && createForm.name.trim() && createForm.facility.trim() && createForm.owner.trim() &&
 	createForm.category.trim() && createForm.evidence.trim() &&
@@ -65,6 +74,7 @@ async function prepareCreate(): Promise<void> {
 	createForm.metricUnit = props.config.key === 'reservoir' ? 'm' : '%';
 	createForm.evidence = '';
 	createForm.relatedCode = '';
+	createForm.gateCodes = [];
   createForm.gateState = 'closed';
 	relatedOptions.value = [];
 	const relationPaths: Record<string, string> = { gateUnit: 'reservoirs', operationDirective: 'gates', executionConfirmation: 'directives' };
@@ -88,6 +98,9 @@ function selectRelated(code: string): void {
 	createForm.relatedCode = code;
 	const related = relatedOptions.value.find((item) => item.code === code);
 	if (related) createForm.facility = related.facility;
+	// The primary gate always heads the joint gate list; the operator may add
+	// up to four more gates of the same facility on top of it.
+	createForm.gateCodes = code ? [code] : [];
 }
 
 async function createRecord(): Promise<void> {
@@ -95,7 +108,15 @@ async function createRecord(): Promise<void> {
 		props.store.error = '请完整填写必填业务字段和现场证据';
 		return;
 	}
-  await props.store.createRecord(props.config.path, { ...createForm, effectiveAt: new Date().toISOString() });
+	const payload: Record<string, unknown> = { ...createForm, effectiveAt: new Date().toISOString() };
+	if (props.config.key === 'operationDirective') {
+		const selected = Array.from(new Set([createForm.relatedCode, ...createForm.gateCodes].filter(Boolean)));
+		if (selected.length >= 2) payload.gateCodes = selected;
+		else delete payload.gateCodes;
+	} else {
+		delete payload.gateCodes;
+	}
+  await props.store.createRecord(props.config.path, payload);
   if (!props.store.error) showCreate.value = false;
 }
 
@@ -165,6 +186,16 @@ async function confirmTransition(): Promise<void> {
 		<el-table-column v-if="config.key === 'operationDirective'" label="目标状态" width="120">
           <template #default="{ row }"><GateStateBadge :state="row.gateState || 'closed'" /></template>
         </el-table-column>
+		<el-table-column v-if="config.key === 'operationDirective'" label="联动闸门清单" min-width="230">
+          <template #default="{ row }">
+            <div v-if="row.gateStates && row.gateStates.length" class="gate-chip-list">
+              <span v-for="gate in row.gateStates" :key="gate.code" class="gate-chip">
+                <span class="gate-chip__code">{{ gate.code }}</span><GateStateBadge :state="gate.status" />
+              </span>
+            </div>
+            <span v-else class="muted">{{ row.relatedCode }}</span>
+          </template>
+        </el-table-column>
 		<el-table-column label="风险" width="80"><template #default="{ row }">{{ riskLabel(row.riskLevel) }}</template></el-table-column>
         <el-table-column prop="owner" label="责任人" min-width="110" />
 		<el-table-column v-if="['gateUnit', 'operationDirective', 'executionConfirmation'].includes(config.key)" prop="relatedCode" :label="relationLabel" width="130" />
@@ -199,6 +230,12 @@ async function confirmTransition(): Promise<void> {
 		  <el-form-item :label="metricLabel"><el-input-number v-model="createForm.metricValue" :min="0" :precision="2" controls-position="right" /></el-form-item>
 		  <el-form-item label="指标单位"><el-input v-model="createForm.metricUnit" /></el-form-item>
 		  <el-form-item v-if="config.key === 'operationDirective'" label="目标闸门状态"><el-select v-model="createForm.gateState"><el-option v-for="state in ['open', 'closed', 'locked']" :key="state" :label="statusLabel(state)" :value="state" /></el-select></el-form-item>
+		  <el-form-item v-if="config.key === 'operationDirective'" label="联合调度闸门（2-5 个，含目标闸门）">
+			<el-select v-model="createForm.gateCodes" multiple :multiple-limit="5" filterable collapse-tags collapse-tags-tooltip placeholder="仅选目标闸门即为单闸门指令">
+				<el-option v-for="item in jointGateOptions" :key="item.id" :label="`${item.code} · ${item.name}`" :value="item.code" />
+			</el-select>
+			<small class="muted">同一库区 2-5 个闸门将联合调度：执行时全部进入移动态，回执时同时落定；任一闸门闭锁、被占用或版本冲突即整次拒绝。</small>
+		  </el-form-item>
         </div>
 		<el-form-item label="业务说明"><el-input v-model="createForm.description" type="textarea" :rows="2" maxlength="1000" show-word-limit /></el-form-item>
         <el-form-item label="现场证据"><el-input v-model="createForm.evidence" type="textarea" :rows="3" /></el-form-item>

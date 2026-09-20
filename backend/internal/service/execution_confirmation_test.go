@@ -22,7 +22,7 @@ func newExecutionWorkflow(t *testing.T) (ExecutionConfirmationService, Operation
 	}
 	sqlDB, _ := db.DB()
 	sqlDB.SetMaxOpenConns(1)
-	if err := db.AutoMigrate(&model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveApproval{}, &model.ExecutionConfirmation{}, &model.AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&model.GateUnit{}, &model.OperationDirective{}, &model.DirectiveGate{}, &model.DirectiveApproval{}, &model.ExecutionConfirmation{}, &model.AuditLog{}); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	gateRepo := repository.NewGateUnitRepository(db)

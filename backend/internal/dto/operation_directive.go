@@ -18,6 +18,9 @@ type CreateOperationDirective struct {
 	Evidence    string    `json:"evidence" binding:"max=2000"`
 	RelatedCode string    `json:"relatedCode" binding:"required,min=2,max=64"`
 	GateState   string    `json:"gateState" binding:"omitempty,oneof=open closed locked"`
+	// GateCodes lists every gate of a joint dispatch (2-5 gates of one
+	// facility, including the primary RelatedCode). Empty means single-gate.
+	GateCodes []string `json:"gateCodes" binding:"omitempty,min=2,max=5,dive,min=2,max=64"`
 }
 
 type UpdateOperationDirective struct {
@@ -34,4 +37,5 @@ type UpdateOperationDirective struct {
 	Evidence        string    `json:"evidence" binding:"max=2000"`
 	RelatedCode     string    `json:"relatedCode" binding:"required,min=2,max=64"`
 	GateState       string    `json:"gateState" binding:"omitempty,oneof=open closed locked"`
+	GateCodes       []string  `json:"gateCodes" binding:"omitempty,min=2,max=5,dive,min=2,max=64"`
 }

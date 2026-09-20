@@ -16,6 +16,9 @@ export interface DomainRecord {
   evidence: string;
 	relatedCode: string;
 	gateState?: 'open' | 'closed' | 'moving' | 'locked';
+	gateCodes?: string[];
+	gates?: DirectiveGateLink[];
+	gateStates?: GateStateSnapshot[];
 	submittedBy?: string;
 	submittedAt?: string;
 	approvedBy?: string;
@@ -38,6 +41,19 @@ export interface DirectiveApproval {
 	fromState: string;
 	toState: string;
 	createdAt: string;
+}
+
+export interface DirectiveGateLink {
+	id: number;
+	directiveId: number;
+	gateId: number;
+	gateCode: string;
+	createdAt: string;
+}
+
+export interface GateStateSnapshot {
+	code: string;
+	status: string;
 }
 
 export interface PageMeta { page: number; pageSize: number; total: number }

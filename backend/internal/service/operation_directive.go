@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,23 +35,51 @@ func NewOperationDirectiveService(repo repository.OperationDirectiveRepository, 
 }
 
 func (s *operationDirectiveService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.OperationDirective], error) {
-	return s.repository.List(ctx, query)
+	page, err := s.repository.List(ctx, query)
+	if err != nil {
+		return page, err
+	}
+	items := make([]*model.OperationDirective, 0, len(page.Items))
+	for index := range page.Items {
+		items = append(items, &page.Items[index])
+	}
+	if err := s.hydrateGateStates(ctx, items...); err != nil {
+		return repository.Page[model.OperationDirective]{}, err
+	}
+	return page, nil
 }
 
 func (s *operationDirectiveService) Get(ctx context.Context, id uint) (model.OperationDirective, error) {
-	return s.repository.Get(ctx, id)
+	item, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return item, err
+	}
+	if err := s.hydrateGateStates(ctx, &item); err != nil {
+		return model.OperationDirective{}, err
+	}
+	return item, nil
 }
 
 func (s *operationDirectiveService) Create(ctx context.Context, input dto.CreateOperationDirective, actor, requestID string) (model.OperationDirective, error) {
 	if err := validateOperationDirectiveBusinessFields(input.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.OperationDirective{}, err
 	}
-	gate, err := s.gates.GetByCode(ctx, input.RelatedCode)
-	if err != nil {
-		return model.OperationDirective{}, fmt.Errorf("linked gate %q: %w", input.RelatedCode, err)
-	}
-	if !strings.EqualFold(strings.TrimSpace(input.Facility), gate.Facility) || gate.Status == string(constants.GateStateLocked) {
-		return model.OperationDirective{}, fmt.Errorf("%w: linked gate is locked or belongs to another facility", ErrInvalidInput)
+	gateCodes := normalizeGateCodes(input.GateCodes)
+	var links []model.DirectiveGate
+	if len(gateCodes) > 0 {
+		gates, err := s.validateJointGateSet(ctx, input.Facility, input.RelatedCode, gateCodes)
+		if err != nil {
+			return model.OperationDirective{}, err
+		}
+		links = buildGateLinks(gates)
+	} else {
+		gate, err := s.gates.GetByCode(ctx, input.RelatedCode)
+		if err != nil {
+			return model.OperationDirective{}, fmt.Errorf("linked gate %q: %w", input.RelatedCode, err)
+		}
+		if !strings.EqualFold(strings.TrimSpace(input.Facility), gate.Facility) || gate.Status == string(constants.GateStateLocked) {
+			return model.OperationDirective{}, fmt.Errorf("%w: linked gate is locked or belongs to another facility", ErrInvalidInput)
+		}
 	}
 	gateState := strings.TrimSpace(input.GateState)
 	if gateState == "" {
@@ -66,13 +96,24 @@ func (s *operationDirectiveService) Create(ctx context.Context, input dto.Create
 		EffectiveAt: input.EffectiveAt.UTC(), Evidence: strings.TrimSpace(input.Evidence),
 		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)), GateState: gateState,
 	}
+	detail := "created 操作指令"
+	if len(links) > 0 {
+		detail = fmt.Sprintf("created joint 操作指令 with gates %s", strings.Join(gateCodes, ", "))
+	}
 	if err := s.security.WithinTransaction(ctx, func(txCtx context.Context) error {
-		if err := s.repository.Create(txCtx, &item); err != nil {
+		if len(links) > 0 {
+			if err := s.repository.CreateWithGates(txCtx, &item, links); err != nil {
+				return err
+			}
+		} else if err := s.repository.Create(txCtx, &item); err != nil {
 			return err
 		}
-		return s.security.Audit(txCtx, actor, requestID, "create", "OperationDirective", item.ID, "", item.Status, "created 操作指令")
+		return s.security.Audit(txCtx, actor, requestID, "create", "OperationDirective", item.ID, "", item.Status, detail)
 	}); err != nil {
 		return model.OperationDirective{}, fmt.Errorf("create 操作指令: %w", err)
+	}
+	if err := s.hydrateGateStates(ctx, &item); err != nil {
+		return model.OperationDirective{}, err
 	}
 	return item, nil
 }
@@ -88,12 +129,25 @@ func (s *operationDirectiveService) Update(ctx context.Context, id uint, input d
 	if err := validateOperationDirectiveBusinessFields(current.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.OperationDirective{}, err
 	}
-	gate, err := s.gates.GetByCode(ctx, input.RelatedCode)
-	if err != nil {
-		return model.OperationDirective{}, fmt.Errorf("linked gate %q: %w", input.RelatedCode, err)
-	}
-	if !strings.EqualFold(strings.TrimSpace(input.Facility), gate.Facility) || gate.Status == string(constants.GateStateLocked) {
-		return model.OperationDirective{}, fmt.Errorf("%w: linked gate is locked or belongs to another facility", ErrInvalidInput)
+	gateCodes := normalizeGateCodes(input.GateCodes)
+	var links []model.DirectiveGate
+	if len(gateCodes) > 0 {
+		gates, err := s.validateJointGateSet(ctx, input.Facility, input.RelatedCode, gateCodes)
+		if err != nil {
+			return model.OperationDirective{}, err
+		}
+		links = buildGateLinks(gates)
+	} else {
+		gate, err := s.gates.GetByCode(ctx, input.RelatedCode)
+		if err != nil {
+			return model.OperationDirective{}, fmt.Errorf("linked gate %q: %w", input.RelatedCode, err)
+		}
+		if !strings.EqualFold(strings.TrimSpace(input.Facility), gate.Facility) || gate.Status == string(constants.GateStateLocked) {
+			return model.OperationDirective{}, fmt.Errorf("%w: linked gate is locked or belongs to another facility", ErrInvalidInput)
+		}
+		if current.JointDispatch() && !containsCode(current.GateCodes(), strings.ToUpper(strings.TrimSpace(input.RelatedCode))) {
+			return model.OperationDirective{}, fmt.Errorf("%w: primary gate must stay within the existing joint gate list", ErrInvalidInput)
+		}
 	}
 	current.Name = strings.TrimSpace(input.Name)
 	current.Description = strings.TrimSpace(input.Description)
@@ -115,11 +169,16 @@ func (s *operationDirectiveService) Update(ctx context.Context, id uint, input d
 		if err := s.repository.Update(txCtx, id, input.ExpectedVersion, &current); err != nil {
 			return err
 		}
+		if len(links) > 0 {
+			if err := s.repository.ReplaceGates(txCtx, id, links); err != nil {
+				return err
+			}
+		}
 		return s.security.Audit(txCtx, actor, requestID, "update", "OperationDirective", id, current.Status, current.Status, "updated business fields")
 	}); err != nil {
 		return model.OperationDirective{}, fmt.Errorf("update 操作指令: %w", err)
 	}
-	return s.repository.Get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *operationDirectiveService) Transition(ctx context.Context, id uint, input dto.TransitionRequest, actor, role, requestID string) (model.OperationDirective, error) {
@@ -139,7 +198,17 @@ func (s *operationDirectiveService) Transition(ctx context.Context, id uint, inp
 	}
 	var gate *model.GateUnit
 	var gateTarget string
-	if target == string(constants.DirectiveStateExecuting) || (current.Status == string(constants.DirectiveStateExecuting) && target == string(constants.DirectiveStateAborted)) {
+	var jointGates []model.GateUnit
+	var jointTarget string
+	movesGates := target == string(constants.DirectiveStateExecuting) ||
+		(current.Status == string(constants.DirectiveStateExecuting) && target == string(constants.DirectiveStateAborted))
+	if movesGates && current.JointDispatch() {
+		planned, plannedTarget, planErr := s.planJointTransition(ctx, &current, target)
+		if planErr != nil {
+			return model.OperationDirective{}, planErr
+		}
+		jointGates, jointTarget = planned, plannedTarget
+	} else if movesGates {
 		linkedGate, gateErr := s.gates.GetByCode(ctx, current.RelatedCode)
 		if gateErr != nil {
 			return model.OperationDirective{}, fmt.Errorf("linked gate %q: %w", current.RelatedCode, gateErr)
@@ -186,6 +255,25 @@ func (s *operationDirectiveService) Transition(ctx context.Context, id uint, inp
 		if err := s.repository.TransitionWithApproval(txCtx, id, input.ExpectedVersion, &current, approval, audit); err != nil {
 			return err
 		}
+		for index := range jointGates {
+			linked := &jointGates[index]
+			if linked.Status == jointTarget {
+				continue
+			}
+			gateBefore := linked.Status
+			linked.Status = jointTarget
+			linked.Version++
+			linked.UpdatedAt = now
+			if err := s.gates.Update(txCtx, linked.ID, linked.Version-1, linked); err != nil {
+				if errors.Is(err, repository.ErrVersionConflict) {
+					return &GateConflictError{Conflicts: []GateConflict{{Code: linked.Code, Reason: "version conflict"}}}
+				}
+				return err
+			}
+			if err := s.security.Audit(txCtx, actor, requestID, "directive_execution", "GateUnit", linked.ID, gateBefore, jointTarget, input.Reason); err != nil {
+				return err
+			}
+		}
 		if gate == nil || gateTarget == "" || gate.Status == gateTarget {
 			return nil
 		}
@@ -200,7 +288,7 @@ func (s *operationDirectiveService) Transition(ctx context.Context, id uint, inp
 	}); err != nil {
 		return model.OperationDirective{}, fmt.Errorf("transition 操作指令: %w", err)
 	}
-	return s.repository.Get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *operationDirectiveService) Delete(ctx context.Context, id uint, actor, requestID string) error {
@@ -217,6 +305,188 @@ func (s *operationDirectiveService) Delete(ctx context.Context, id uint, actor, 
 		}
 		return s.security.Audit(txCtx, actor, requestID, "delete", "OperationDirective", id, current.Status, "deleted", "soft deleted 操作指令")
 	})
+}
+
+// planJointTransition loads the whole joint gate set and either returns the
+// gates in link order with their common target state, or rejects the entire
+// step with every conflicting gate listed.
+func (s *operationDirectiveService) planJointTransition(ctx context.Context, current *model.OperationDirective, target string) ([]model.GateUnit, string, error) {
+	codes := current.GateCodes()
+	gateTarget := string(constants.GateStateMoving)
+	if target == string(constants.DirectiveStateAborted) {
+		gateTarget = string(constants.GateStateLocked)
+	}
+	gates, err := s.gates.GetByCodes(ctx, codes)
+	if err != nil {
+		return nil, "", err
+	}
+	byCode := make(map[string]model.GateUnit, len(gates))
+	for _, item := range gates {
+		byCode[item.Code] = item
+	}
+	busy := map[string]bool{}
+	if gateTarget == string(constants.GateStateMoving) {
+		occupied, err := s.repository.ExecutingGateConflicts(ctx, codes, current.ID)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, code := range occupied {
+			busy[code] = true
+		}
+	}
+	conflicts := make([]GateConflict, 0)
+	seen := map[string]bool{}
+	addConflict := func(code, reason string) {
+		if !seen[code] {
+			seen[code] = true
+			conflicts = append(conflicts, GateConflict{Code: code, Reason: reason})
+		}
+	}
+	ordered := make([]model.GateUnit, 0, len(codes))
+	moving := gateTarget == string(constants.GateStateMoving)
+	for _, code := range codes {
+		gate, ok := byCode[code]
+		if !ok {
+			addConflict(code, "gate not found")
+			continue
+		}
+		ordered = append(ordered, gate)
+		switch {
+		case moving && gate.Status == string(constants.GateStateLocked):
+			addConflict(code, "locked")
+		case moving && busy[code]:
+			addConflict(code, "already bound to an executing directive")
+		case gate.Status == gateTarget:
+			// A gate already moving at execute time belongs to an untracked
+			// operation, so the whole group must be rejected.
+			if moving {
+				addConflict(code, "already moving")
+			}
+		case !constants.CanTransition(constants.GateUnitTransitions, gate.Status, gateTarget):
+			addConflict(code, fmt.Sprintf("cannot move from %s to %s", gate.Status, gateTarget))
+		}
+	}
+	if len(conflicts) > 0 {
+		sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Code < conflicts[j].Code })
+		return nil, "", &GateConflictError{Conflicts: conflicts}
+	}
+	return ordered, gateTarget, nil
+}
+
+// validateJointGateSet enforces the joint dispatch contract: two to five
+// distinct gates of one facility, none locked, primary gate included.
+func (s *operationDirectiveService) validateJointGateSet(ctx context.Context, facility, relatedCode string, gateCodes []string) ([]model.GateUnit, error) {
+	if len(gateCodes) < 2 || len(gateCodes) > 5 {
+		return nil, fmt.Errorf("%w: joint dispatch requires 2 to 5 gates, got %d", ErrInvalidInput, len(gateCodes))
+	}
+	related := strings.ToUpper(strings.TrimSpace(relatedCode))
+	if !containsCode(gateCodes, related) {
+		return nil, fmt.Errorf("%w: primary gate %s must be part of the joint gate list", ErrInvalidInput, related)
+	}
+	gates, err := s.gates.GetByCodes(ctx, gateCodes)
+	if err != nil {
+		return nil, err
+	}
+	byCode := make(map[string]model.GateUnit, len(gates))
+	for _, gate := range gates {
+		byCode[gate.Code] = gate
+	}
+	missing := make([]string, 0)
+	for _, code := range gateCodes {
+		if _, ok := byCode[code]; !ok {
+			missing = append(missing, code)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%w: unknown gates: %s", ErrInvalidInput, strings.Join(missing, ", "))
+	}
+	ordered := make([]model.GateUnit, 0, len(gateCodes))
+	for _, code := range gateCodes {
+		gate := byCode[code]
+		if !strings.EqualFold(strings.TrimSpace(facility), gate.Facility) {
+			return nil, fmt.Errorf("%w: gate %s belongs to another facility", ErrInvalidInput, gate.Code)
+		}
+		if gate.Status == string(constants.GateStateLocked) {
+			return nil, fmt.Errorf("%w: gate %s is locked", ErrInvalidInput, gate.Code)
+		}
+		ordered = append(ordered, gate)
+	}
+	return ordered, nil
+}
+
+// hydrateGateStates attaches the live gate states so list and detail reads
+// always reflect the persisted gate rows after a refresh.
+func (s *operationDirectiveService) hydrateGateStates(ctx context.Context, items ...*model.OperationDirective) error {
+	codes := make([]string, 0)
+	seen := map[string]bool{}
+	for _, item := range items {
+		linked := item.GateCodes()
+		if len(linked) == 0 && item.RelatedCode != "" {
+			linked = []string{item.RelatedCode}
+		}
+		for _, code := range linked {
+			if !seen[code] {
+				seen[code] = true
+				codes = append(codes, code)
+			}
+		}
+	}
+	if len(codes) == 0 {
+		return nil
+	}
+	gates, err := s.gates.GetByCodes(ctx, codes)
+	if err != nil {
+		return err
+	}
+	statusByCode := make(map[string]string, len(gates))
+	for _, gate := range gates {
+		statusByCode[gate.Code] = gate.Status
+	}
+	for _, item := range items {
+		linked := item.GateCodes()
+		if len(linked) == 0 && item.RelatedCode != "" {
+			linked = []string{item.RelatedCode}
+		}
+		snapshots := make([]model.GateStateSnapshot, 0, len(linked))
+		for _, code := range linked {
+			if status, ok := statusByCode[code]; ok {
+				snapshots = append(snapshots, model.GateStateSnapshot{Code: code, Status: status})
+			}
+		}
+		item.GateStates = snapshots
+	}
+	return nil
+}
+
+func buildGateLinks(gates []model.GateUnit) []model.DirectiveGate {
+	links := make([]model.DirectiveGate, 0, len(gates))
+	for _, gate := range gates {
+		links = append(links, model.DirectiveGate{GateID: gate.ID, GateCode: gate.Code})
+	}
+	return links
+}
+
+func normalizeGateCodes(codes []string) []string {
+	normalized := make([]string, 0, len(codes))
+	seen := map[string]bool{}
+	for _, code := range codes {
+		trimmed := strings.ToUpper(strings.TrimSpace(code))
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func containsCode(codes []string, code string) bool {
+	for _, item := range codes {
+		if item == code {
+			return true
+		}
+	}
+	return false
 }
 
 func directiveRoleAllowed(from, target, role string) bool {

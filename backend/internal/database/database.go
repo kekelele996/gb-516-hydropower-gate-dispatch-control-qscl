@@ -80,6 +80,7 @@ func migrate(db *gorm.DB) error {
 		&model.Reservoir{},
 		&model.GateUnit{},
 		&model.OperationDirective{},
+		&model.DirectiveGate{},
 		&model.DirectiveApproval{},
 		&model.ExecutionConfirmation{},
 	)

@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -141,23 +143,32 @@ func (s *executionConfirmationService) Transition(ctx context.Context, id uint, 
 
 	var directive model.OperationDirective
 	var gate model.GateUnit
+	var jointGates []model.GateUnit
 	var directiveTarget, gateTarget string
 	if before == model.ExecutionConfirmationInitialStatus {
 		directive, err = s.requireExecutingDirective(ctx, current.RelatedCode)
 		if err != nil {
 			return model.ExecutionConfirmation{}, err
 		}
-		gate, err = s.gates.GetByCode(ctx, directive.RelatedCode)
-		if err != nil {
-			return model.ExecutionConfirmation{}, fmt.Errorf("linked gate %q: %w", directive.RelatedCode, err)
-		}
 		if target == "confirmed" {
 			directiveTarget, gateTarget = string(constants.DirectiveStateCompleted), directive.GateState
 		} else {
 			directiveTarget, gateTarget = string(constants.DirectiveStateAborted), string(constants.GateStateLocked)
 		}
-		if gate.Status != gateTarget && !constants.CanTransition(constants.GateUnitTransitions, gate.Status, gateTarget) {
-			return model.ExecutionConfirmation{}, fmt.Errorf("%w: gate %s cannot move from %s to %s", ErrInvalidTransition, gate.Code, gate.Status, gateTarget)
+		if directive.JointDispatch() {
+			planned, planErr := s.planJointSettle(ctx, &directive, gateTarget)
+			if planErr != nil {
+				return model.ExecutionConfirmation{}, planErr
+			}
+			jointGates = planned
+		} else {
+			gate, err = s.gates.GetByCode(ctx, directive.RelatedCode)
+			if err != nil {
+				return model.ExecutionConfirmation{}, fmt.Errorf("linked gate %q: %w", directive.RelatedCode, err)
+			}
+			if gate.Status != gateTarget && !constants.CanTransition(constants.GateUnitTransitions, gate.Status, gateTarget) {
+				return model.ExecutionConfirmation{}, fmt.Errorf("%w: gate %s cannot move from %s to %s", ErrInvalidTransition, gate.Code, gate.Status, gateTarget)
+			}
 		}
 	}
 
@@ -181,7 +192,26 @@ func (s *executionConfirmationService) Transition(ctx context.Context, id uint, 
 		if err := s.security.Audit(txCtx, actor, requestID, "execution_outcome", "OperationDirective", directive.ID, directiveBefore, directiveTarget, input.Reason); err != nil {
 			return err
 		}
-		if gate.Status == gateTarget {
+		for index := range jointGates {
+			linked := &jointGates[index]
+			if linked.Status == gateTarget {
+				continue
+			}
+			gateBefore := linked.Status
+			linked.Status = gateTarget
+			linked.Version++
+			linked.UpdatedAt = now
+			if err := s.gates.Update(txCtx, linked.ID, linked.Version-1, linked); err != nil {
+				if errors.Is(err, repository.ErrVersionConflict) {
+					return &GateConflictError{Conflicts: []GateConflict{{Code: linked.Code, Reason: "version conflict"}}}
+				}
+				return err
+			}
+			if err := s.security.Audit(txCtx, actor, requestID, "execution_outcome", "GateUnit", linked.ID, gateBefore, gateTarget, input.Reason); err != nil {
+				return err
+			}
+		}
+		if len(jointGates) > 0 || gate.Status == gateTarget {
 			return nil
 		}
 		gateBefore := gate.Status
@@ -223,6 +253,39 @@ func (s *executionConfirmationService) requireExecutingDirective(ctx context.Con
 		return model.OperationDirective{}, fmt.Errorf("%w: execution confirmation requires an executing directive", ErrInvalidInput)
 	}
 	return directive, nil
+}
+
+// planJointSettle loads the whole joint gate set of an executing directive and
+// either returns the gates in link order or rejects the settle with every
+// conflicting gate listed, so a receipt never lands on a partial group.
+func (s *executionConfirmationService) planJointSettle(ctx context.Context, directive *model.OperationDirective, gateTarget string) ([]model.GateUnit, error) {
+	codes := directive.GateCodes()
+	gates, err := s.gates.GetByCodes(ctx, codes)
+	if err != nil {
+		return nil, err
+	}
+	byCode := make(map[string]model.GateUnit, len(gates))
+	for _, gate := range gates {
+		byCode[gate.Code] = gate
+	}
+	conflicts := make([]GateConflict, 0)
+	ordered := make([]model.GateUnit, 0, len(codes))
+	for _, code := range codes {
+		gate, ok := byCode[code]
+		if !ok {
+			conflicts = append(conflicts, GateConflict{Code: code, Reason: "gate not found"})
+			continue
+		}
+		ordered = append(ordered, gate)
+		if gate.Status != gateTarget && !constants.CanTransition(constants.GateUnitTransitions, gate.Status, gateTarget) {
+			conflicts = append(conflicts, GateConflict{Code: code, Reason: fmt.Sprintf("cannot move from %s to %s", gate.Status, gateTarget)})
+		}
+	}
+	if len(conflicts) > 0 {
+		sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Code < conflicts[j].Code })
+		return nil, &GateConflictError{Conflicts: conflicts}
+	}
+	return ordered, nil
 }
 
 func (s *executionConfirmationService) StatusCounts(ctx context.Context) (map[string]int64, error) {
